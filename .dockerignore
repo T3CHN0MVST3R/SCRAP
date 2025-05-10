@@ -1,0 +1,65 @@
+# Git
+.git
+.gitignore
+
+# CI
+.circleci
+.github
+
+# Editor directories and files
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# Dependency directories
+vendor/
+node_modules/
+
+# Test files
+*_test.go
+*.test
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Documentation
+README.md
+*.md
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Temporary files
+tmp/
+temp/
+
+# Downloads
+downloads/
+
+# Environment files
+.env
+.env.*
+
+# IDE configurations
+.sublime-workspace
+.sublime-project
+
+# Coverage reports
+coverage.html
+coverage.out
+
+# Build artifacts (except the main binary)
+!website-scraper
+!app
+
+# Local configuration
+*.local.yml
+*.local.yaml
