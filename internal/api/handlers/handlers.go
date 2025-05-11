@@ -2,15 +2,19 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/xuri/excelize/v2"
 
 	"website-scraper/internal/config"
 	"website-scraper/internal/crawler"
@@ -151,10 +155,234 @@ func (h *Handlers) ExportOperation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Вызываем сервис для экспорта операции
-	content, filename, err := h.parserService.ExportOperation(r.Context(), operationID, format)
+	// Получаем результаты операции
+	result, err := h.parserService.GetOperationResult(r.Context(), operationID)
 	if err != nil {
-		RespondWithError(w, http.StatusInternalServerError, "Ошибка при экспорте операции: "+err.Error())
+		RespondWithError(w, http.StatusInternalServerError, "Ошибка при получении результата операции: "+err.Error())
+		return
+	}
+
+	var filename string
+	var content []byte
+
+	// В зависимости от формата экспортируем результаты
+	switch format {
+	case "excel":
+		// Создаем Excel-файл
+		f := excelize.NewFile()
+		defer func() {
+			// Очищаем временный файл
+			if err := f.Close(); err != nil {
+				log.Printf("Ошибка закрытия Excel-файла: %v", err)
+			}
+		}()
+
+		// Лист 1: Информация об операции
+		f.SetSheetName("Sheet1", "Операция")
+
+		// Заголовки для информации об операции
+		headers := []string{"ID", "URL", "Status", "Created At", "Updated At"}
+		for i, header := range headers {
+			cell := string(rune('A'+i)) + "1"
+			f.SetCellValue("Операция", cell, header)
+		}
+
+		// Данные операции
+		f.SetCellValue("Операция", "A2", result.Operation.ID.String())
+		f.SetCellValue("Операция", "B2", result.Operation.URL)
+		f.SetCellValue("Операция", "C2", result.Operation.Status)
+		f.SetCellValue("Операция", "D2", result.Operation.CreatedAt.Format(time.RFC3339))
+		f.SetCellValue("Операция", "E2", result.Operation.UpdatedAt.Format(time.RFC3339))
+
+		// Лист 2: Блоки
+		_, err := f.NewSheet("Блоки")
+		if err != nil {
+			RespondWithError(w, http.StatusInternalServerError, "Ошибка создания листа Блоки: "+err.Error())
+			return
+		}
+
+		// Заголовки для блоков
+		blockHeaders := []string{"ID", "Type", "Platform", "Created At", "Content", "HTML Preview"}
+		for i, header := range blockHeaders {
+			cell := string(rune('A'+i)) + "1"
+			f.SetCellValue("Блоки", cell, header)
+		}
+
+		// Устанавливаем ширину колонок
+		f.SetColWidth("Блоки", "E", "E", 30) // Content
+		f.SetColWidth("Блоки", "F", "F", 50) // HTML Preview
+
+		// Заполняем данные блоков
+		for i, block := range result.Blocks {
+			row := i + 2
+
+			// ID блока
+			f.SetCellValue("Блоки", fmt.Sprintf("A%d", row), block.ID.String())
+
+			// Тип блока
+			f.SetCellValue("Блоки", fmt.Sprintf("B%d", row), block.BlockType)
+
+			// Платформа
+			f.SetCellValue("Блоки", fmt.Sprintf("C%d", row), block.Platform)
+
+			// Дата создания
+			f.SetCellValue("Блоки", fmt.Sprintf("D%d", row), block.CreatedAt.Format(time.RFC3339))
+
+			// Контент в JSON
+			contentBytes, err := json.Marshal(block.Content)
+			if err != nil {
+				contentBytes = []byte("{}")
+			}
+			f.SetCellValue("Блоки", fmt.Sprintf("E%d", row), string(contentBytes))
+
+			// HTML (с ограничением для Excel)
+			htmlContent := block.HTML
+			if len(htmlContent) > 32767 { // Ограничение ячейки Excel
+				htmlContent = htmlContent[:32767] + "...\n[Превышен лимит символов Excel]"
+			}
+			f.SetCellValue("Блоки", fmt.Sprintf("F%d", row), htmlContent)
+		}
+
+		// Лист 3: Статистика
+		_, err = f.NewSheet("Статистика")
+		if err != nil {
+			log.Printf("Ошибка создания листа Статистика: %v", err)
+		} else {
+			// Статистика по типам блоков
+			blockTypeStats := make(map[string]int)
+			platformStats := make(map[string]int)
+
+			for _, block := range result.Blocks {
+				blockTypeStats[string(block.BlockType)]++
+				platformStats[string(block.Platform)]++
+			}
+
+			// Заголовки статистики
+			f.SetCellValue("Статистика", "A1", "Статистика операции")
+			f.SetCellValue("Статистика", "A3", "Всего блоков:")
+			f.SetCellValue("Статистика", "B3", len(result.Blocks))
+
+			// Статистика по типам
+			row := 5
+			f.SetCellValue("Статистика", "A5", "По типам блоков:")
+			for blockType, count := range blockTypeStats {
+				row++
+				f.SetCellValue("Статистика", fmt.Sprintf("A%d", row), blockType)
+				f.SetCellValue("Статистика", fmt.Sprintf("B%d", row), count)
+			}
+
+			// Статистика по платформам
+			row += 2
+			f.SetCellValue("Статистика", fmt.Sprintf("A%d", row), "По платформам:")
+			for platform, count := range platformStats {
+				row++
+				f.SetCellValue("Статистика", fmt.Sprintf("A%d", row), platform)
+				f.SetCellValue("Статистика", fmt.Sprintf("B%d", row), count)
+			}
+		}
+
+		// Установить активный лист
+		f.SetActiveSheet(0)
+
+		// Сохраняем Excel-файл в буфер
+		buffer, err := f.WriteToBuffer()
+		if err != nil {
+			RespondWithError(w, http.StatusInternalServerError, "Ошибка записи Excel-файла: "+err.Error())
+			return
+		}
+
+		content = buffer.Bytes()
+		filename = fmt.Sprintf("operation_report_%s.xlsx", operationID.String())
+
+	case "text":
+		// Формируем полный текстовый отчет
+		var textBuilder strings.Builder
+
+		textBuilder.WriteString("=" + strings.Repeat("=", 50) + "=\n")
+		textBuilder.WriteString("ОТЧЕТ ПО ОПЕРАЦИИ ПАРСИНГА\n")
+		textBuilder.WriteString("=" + strings.Repeat("=", 50) + "=\n\n")
+
+		// Информация об операции
+		textBuilder.WriteString("ОСНОВНАЯ ИНФОРМАЦИЯ:\n")
+		textBuilder.WriteString(fmt.Sprintf("  ID операции: %s\n", result.Operation.ID.String()))
+		textBuilder.WriteString(fmt.Sprintf("  URL: %s\n", result.Operation.URL))
+		textBuilder.WriteString(fmt.Sprintf("  Статус: %s\n", result.Operation.Status))
+		textBuilder.WriteString(fmt.Sprintf("  Создан: %s\n", result.Operation.CreatedAt.Format("2006-01-02 15:04:05")))
+		textBuilder.WriteString(fmt.Sprintf("  Обновлен: %s\n\n", result.Operation.UpdatedAt.Format("2006-01-02 15:04:05")))
+
+		// Статистика
+		textBuilder.WriteString("СТАТИСТИКА:\n")
+		textBuilder.WriteString(fmt.Sprintf("  Всего найдено блоков: %d\n\n", len(result.Blocks)))
+
+		// Статистика по типам
+		blockTypeStats := make(map[string]int)
+		platformStats := make(map[string]int)
+
+		for _, block := range result.Blocks {
+			blockTypeStats[string(block.BlockType)]++
+			platformStats[string(block.Platform)]++
+		}
+
+		textBuilder.WriteString("  По типам блоков:\n")
+		for blockType, count := range blockTypeStats {
+			textBuilder.WriteString(fmt.Sprintf("    - %-10s: %d\n", blockType, count))
+		}
+
+		textBuilder.WriteString("\n  По платформам:\n")
+		for platform, count := range platformStats {
+			textBuilder.WriteString(fmt.Sprintf("    - %-10s: %d\n", platform, count))
+		}
+
+		textBuilder.WriteString("\n" + strings.Repeat("-", 60) + "\n\n")
+
+		// Детальная информация о блоках
+		textBuilder.WriteString("ДЕТАЛЬНАЯ ИНФОРМАЦИЯ О БЛОКАХ:\n\n")
+
+		for i, block := range result.Blocks {
+			textBuilder.WriteString(fmt.Sprintf("БЛОК #%d\n", i+1))
+			textBuilder.WriteString(strings.Repeat("-", 30) + "\n")
+			textBuilder.WriteString(fmt.Sprintf("ID: %s\n", block.ID.String()))
+			textBuilder.WriteString(fmt.Sprintf("Тип: %s\n", block.BlockType))
+			textBuilder.WriteString(fmt.Sprintf("Платформа: %s\n", block.Platform))
+			textBuilder.WriteString(fmt.Sprintf("Создан: %s\n", block.CreatedAt.Format("2006-01-02 15:04:05")))
+
+			// Контент в JSON
+			textBuilder.WriteString("\nКОНТЕНТ (JSON):\n")
+			contentJSON, err := json.MarshalIndent(block.Content, "  ", "  ")
+			if err != nil {
+				textBuilder.WriteString("  Ошибка сериализации контента\n")
+			} else {
+				if len(contentJSON) > 500 {
+					textBuilder.WriteString(string(contentJSON[:500]))
+					textBuilder.WriteString("...\n  [Показаны первые 500 символов]\n")
+				} else {
+					textBuilder.WriteString(string(contentJSON) + "\n")
+				}
+			}
+
+			// HTML контент
+			textBuilder.WriteString("\nHTML КОНТЕНТ:\n")
+			if len(block.HTML) == 0 {
+				textBuilder.WriteString("  [Пусто]\n")
+			} else if len(block.HTML) > 1000 {
+				textBuilder.WriteString(block.HTML[:1000])
+				textBuilder.WriteString("...\n  [Показаны первые 1000 символов]\n")
+			} else {
+				textBuilder.WriteString(block.HTML + "\n")
+			}
+
+			textBuilder.WriteString("\n" + strings.Repeat("=", 60) + "\n\n")
+		}
+
+		// Подвал отчета
+		textBuilder.WriteString("Отчет сгенерирован: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+		textBuilder.WriteString("Сервис: Website Scraper\n")
+
+		content = []byte(textBuilder.String())
+		filename = fmt.Sprintf("operation_report_%s.txt", operationID.String())
+
+	default:
+		RespondWithError(w, http.StatusBadRequest, "Неподдерживаемый формат")
 		return
 	}
 
@@ -163,6 +391,7 @@ func (h *Handlers) ExportOperation(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", getContentType(format))
 	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
 
+	// Отправляем файл
 	w.WriteHeader(http.StatusOK)
 	w.Write(content)
 }
@@ -350,21 +579,87 @@ func (h *Handlers) DownloadBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Создаем экземпляр downloader
-	downloader := downloader.NewDownloader(h.config)
-
-	// Загружаем блок
-	data, filename, err := downloader.DownloadBlock(operationID, blockID, format)
+	// Получаем блок из базы данных
+	block, err := h.parserService.GetBlockByID(r.Context(), blockID)
 	if err != nil {
 		RespondWithError(w, http.StatusNotFound, "Блок не найден: "+err.Error())
 		return
 	}
 
-	// Определяем Content-Type
+	// Проверяем, что блок принадлежит указанной операции
+	if block.OperationID != operationID {
+		RespondWithError(w, http.StatusNotFound, "Блок не найден в указанной операции")
+		return
+	}
+
+	var data []byte
+	var filename string
 	var contentType string
+
 	if format == "html" {
+		// Создаем полный HTML документ
+		htmlContent := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Блок %s - %s</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; padding: 20px; }
+        .metadata { background: #f5f5f5; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
+        .content { border: 1px solid #ddd; padding: 15px; margin-top: 20px; }
+        pre { background: #f8f8f8; padding: 10px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <div class="metadata">
+        <h2>Информация о блоке</h2>
+        <ul>
+            <li><strong>ID блока:</strong> %s</li>
+            <li><strong>ID операции:</strong> %s</li>
+            <li><strong>Тип блока:</strong> %s</li>
+            <li><strong>Платформа:</strong> %s</li>
+            <li><strong>Создан:</strong> %s</li>
+        </ul>
+        <h3>Контент (JSON):</h3>
+        <pre>%s</pre>
+    </div>
+    <div class="content">
+        <h2>HTML содержимое блока</h2>
+        %s
+    </div>
+</body>
+</html>`,
+			block.BlockType, block.ID.String(),
+			block.ID.String(),
+			block.OperationID.String(),
+			block.BlockType,
+			block.Platform,
+			block.CreatedAt.Format("2006-01-02 15:04:05"),
+			jsonPretty(block.Content),
+			block.HTML)
+
+		data = []byte(htmlContent)
+		filename = fmt.Sprintf("block_%s_%s.html", block.BlockType, block.ID.String())
 		contentType = "text/html"
 	} else {
+		// JSON формат
+		jsonData, err := json.MarshalIndent(map[string]interface{}{
+			"id":           block.ID,
+			"operation_id": block.OperationID,
+			"block_type":   block.BlockType,
+			"platform":     block.Platform,
+			"created_at":   block.CreatedAt,
+			"content":      block.Content,
+			"html":         block.HTML,
+		}, "", "  ")
+		if err != nil {
+			RespondWithError(w, http.StatusInternalServerError, "Ошибка сериализации данных")
+			return
+		}
+
+		data = jsonData
+		filename = fmt.Sprintf("block_%s_%s.json", block.BlockType, block.ID.String())
 		contentType = "application/json"
 	}
 
@@ -375,6 +670,15 @@ func (h *Handlers) DownloadBlock(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	w.Write(data)
+}
+
+// Вспомогательная функция для красивого форматирования JSON
+func jsonPretty(v interface{}) string {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
 }
 
 // GetBlockFiles возвращает список файлов блоков для операции
@@ -427,8 +731,28 @@ func (h *Handlers) DownloadAllBlocks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Сначала получаем все блоки для этой операции
+	blocks, err := h.parserService.GetBlocksByOperationID(r.Context(), operationID)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Ошибка получения блоков: "+err.Error())
+		return
+	}
+
 	// Создаем экземпляр downloader
 	downloader := downloader.NewDownloader(h.config)
+
+	// Убеждаемся, что блоки сохранены на диске
+	if err := downloader.SaveBlocks(blocks); err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Ошибка сохранения блоков: "+err.Error())
+		return
+	}
+
+	// Создаем сводный файл, который перечисляет все шапки и подвалы по платформам
+	summaryPath, err := downloader.CreateBlocksSummary(operationID, blocks)
+	if err != nil {
+		log.Printf("Предупреждение: Не удалось создать сводку блоков: %v", err)
+		// Продолжаем, даже если создание сводки не удалось
+	}
 
 	// Создаем архив
 	archivePath, err := downloader.ZipBlocks(operationID)
@@ -452,10 +776,8 @@ func (h *Handlers) DownloadAllBlocks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Определяем имя файла
-	filename := filepath.Base(archivePath)
-
 	// Устанавливаем заголовки
+	filename := filepath.Base(archivePath)
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
 	w.Header().Set("Content-Length", strconv.FormatInt(fileInfo.Size(), 10))
@@ -464,11 +786,15 @@ func (h *Handlers) DownloadAllBlocks(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	io.Copy(w, file)
 
-	// Удаляем архив после отправки
+	// Очистка
 	defer func() {
 		if err := os.Remove(archivePath); err != nil {
-			// Логируем ошибку, но не останавливаем выполнение
 			log.Printf("Ошибка удаления архива %s: %v", archivePath, err)
+		}
+		if summaryPath != "" {
+			if err := os.Remove(summaryPath); err != nil {
+				log.Printf("Ошибка удаления файла сводки %s: %v", summaryPath, err)
+			}
 		}
 	}()
 }

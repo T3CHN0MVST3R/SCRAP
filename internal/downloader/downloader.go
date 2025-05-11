@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -393,6 +394,139 @@ func (d *Downloader) sanitizeFilename(url string) string {
 	}
 
 	return filename
+}
+
+// CreateBlocksSummary создает сводный HTML-файл со всеми шапками и подвалами по платформам
+func (d *Downloader) CreateBlocksSummary(operationID uuid.UUID, blocks []models.Block) (string, error) {
+	// Создаем директорию для этой операции
+	blockDir := filepath.Join(d.cfg.Downloader.OutputDir, "blocks", operationID.String())
+	if err := os.MkdirAll(blockDir, 0755); err != nil {
+		return "", fmt.Errorf("ошибка создания директории: %w", err)
+	}
+
+	// Создаем файл сводки
+	summaryPath := filepath.Join(blockDir, "blocks_summary.html")
+	file, err := os.Create(summaryPath)
+	if err != nil {
+		return "", fmt.Errorf("ошибка создания файла сводки: %w", err)
+	}
+	defer file.Close()
+
+	// Группируем блоки по типу и платформе
+	headersByPlatform := make(map[string][]models.Block)
+	footersByPlatform := make(map[string][]models.Block)
+
+	for _, block := range blocks {
+		if block.BlockType == models.BlockTypeHeader {
+			platform := string(block.Platform)
+			headersByPlatform[platform] = append(headersByPlatform[platform], block)
+		} else if block.BlockType == models.BlockTypeFooter {
+			platform := string(block.Platform)
+			footersByPlatform[platform] = append(footersByPlatform[platform], block)
+		}
+	}
+
+	// Пишем HTML-заголовок
+	html := `<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Сводка блоков для операции: ` + operationID.String() + `</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; padding: 20px; }
+        h1, h2, h3 { color: #333; }
+        .platform-section { margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 5px; }
+        .block-container { margin-bottom: 20px; padding: 10px; background: #f9f9f9; border-radius: 5px; }
+        .block-content { border: 1px solid #ccc; padding: 10px; margin-top: 10px; background: white; overflow: auto; max-height: 300px; }
+        .block-info { margin-bottom: 10px; }
+        .platform-wordpress { border-left: 5px solid #21759b; }
+        .platform-tilda { border-left: 5px solid #ff8c69; }
+        .platform-bitrix { border-left: 5px solid #c2185b; }
+        .platform-html5 { border-left: 5px solid #4caf50; }
+        .platform-unknown { border-left: 5px solid #9e9e9e; }
+        .toc { background: #f5f5f5; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
+        .toc ul { list-style-type: none; padding-left: 20px; }
+        .toc li { margin-bottom: 5px; }
+        .toc a { text-decoration: none; color: #0066cc; }
+        .toc a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <h1>Сводка блоков для операции: ` + operationID.String() + `</h1>
+    <div class="toc">
+        <h2>Содержание</h2>
+        <ul>
+            <li><a href="#headers">Шапки сайтов</a>
+                <ul>`
+
+	// Добавляем ссылки на заголовки в содержание
+	for platform := range headersByPlatform {
+		html += `<li><a href="#headers-` + platform + `">Платформа: ` + platform + ` (` + strconv.Itoa(len(headersByPlatform[platform])) + `)</a></li>`
+	}
+
+	html += `</ul>
+            </li>
+            <li><a href="#footers">Подвалы сайтов</a>
+                <ul>`
+
+	// Добавляем ссылки на подвалы в содержание
+	for platform := range footersByPlatform {
+		html += `<li><a href="#footers-` + platform + `">Платформа: ` + platform + ` (` + strconv.Itoa(len(footersByPlatform[platform])) + `)</a></li>`
+	}
+
+	html += `</ul>
+            </li>
+        </ul>
+    </div>
+
+    <h2 id="headers">Шапки сайтов по платформам</h2>`
+
+	// Добавляем секцию с шапками
+	for platform, headers := range headersByPlatform {
+		html += `<div id="headers-` + platform + `" class="platform-section platform-` + platform + `">
+    <h3>Платформа: ` + platform + ` (` + strconv.Itoa(len(headers)) + ` шапок)</h3>`
+
+		for _, header := range headers {
+			html += `<div class="block-container">
+        <div class="block-info">
+            <strong>ID блока:</strong> ` + header.ID.String() + `<br>
+            <strong>Создан:</strong> ` + header.CreatedAt.Format("2006-01-02 15:04:05") + `
+        </div>
+        <div class="block-content">` + header.HTML + `</div>
+    </div>`
+		}
+		html += `</div>`
+	}
+
+	// Добавляем секцию с подвалами
+	html += `<h2 id="footers">Подвалы сайтов по платформам</h2>`
+	for platform, footers := range footersByPlatform {
+		html += `<div id="footers-` + platform + `" class="platform-section platform-` + platform + `">
+    <h3>Платформа: ` + platform + ` (` + strconv.Itoa(len(footers)) + ` подвалов)</h3>`
+
+		for _, footer := range footers {
+			html += `<div class="block-container">
+        <div class="block-info">
+            <strong>ID блока:</strong> ` + footer.ID.String() + `<br>
+            <strong>Создан:</strong> ` + footer.CreatedAt.Format("2006-01-02 15:04:05") + `
+        </div>
+        <div class="block-content">` + footer.HTML + `</div>
+    </div>`
+		}
+		html += `</div>`
+	}
+
+	html += `</body>
+</html>`
+
+	// Записываем HTML в файл
+	_, err = file.WriteString(html)
+	if err != nil {
+		return "", fmt.Errorf("ошибка записи в файл сводки: %w", err)
+	}
+
+	return summaryPath, nil
 }
 
 // Module регистрирует зависимости для загрузчика

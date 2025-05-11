@@ -30,7 +30,7 @@ func SetupRouter(handlers *handlers.Handlers) *mux.Router {
 	// Регистрируем маршруты краулера
 	apiRouter.HandleFunc("/crawl", handlers.CrawlURL).Methods(http.MethodPost)
 
-	// ДОБАВЛЯЕМ ОТСУТСТВУЮЩИЕ МАРШРУТЫ ДЛЯ РАБОТЫ С БЛОКАМИ
+	// Добавьте эти строки в функцию SetupRouter
 	apiRouter.HandleFunc("/operations/{operation_id}/blocks/save", handlers.SaveBlocksEndpoint).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/operations/{operation_id}/blocks", handlers.GetBlockFiles).Methods(http.MethodGet)
 	apiRouter.HandleFunc("/operations/{operation_id}/blocks/{block_id}/download", handlers.DownloadBlock).Methods(http.MethodGet)
