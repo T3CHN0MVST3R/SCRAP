@@ -2,7 +2,11 @@ package handlers
 
 import (
 	"encoding/json"
+	"io"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/google/uuid"
@@ -10,6 +14,7 @@ import (
 
 	"website-scraper/internal/config"
 	"website-scraper/internal/crawler"
+	"website-scraper/internal/downloader"
 	"website-scraper/internal/models"
 	"website-scraper/internal/parser"
 )
@@ -60,9 +65,11 @@ func (h *Handlers) ParseURL(w http.ResponseWriter, r *http.Request) {
 
 	// Добавляем информацию о доступных эндпоинтах для этой операции
 	links := map[string]string{
-		"get_result": "/api/v1/operations/" + operationID.String(),
-		"export":     "/api/v1/operations/" + operationID.String() + "/export",
-		"download":   "/api/v1/download/" + operationID.String(),
+		"get_result":  "/api/v1/operations/" + operationID.String(),
+		"export":      "/api/v1/operations/" + operationID.String() + "/export",
+		"download":    "/api/v1/download/" + operationID.String(),
+		"save_blocks": "/api/v1/operations/" + operationID.String() + "/blocks/save",
+		"blocks_list": "/api/v1/operations/" + operationID.String() + "/blocks",
 	}
 
 	// Расширенный ответ
@@ -101,8 +108,10 @@ func (h *Handlers) GetOperationResult(w http.ResponseWriter, r *http.Request) {
 
 	// Добавляем информацию о доступных действиях
 	links := map[string]string{
-		"export":   "/api/v1/operations/" + operationID.String() + "/export",
-		"download": "/api/v1/download/" + operationID.String(),
+		"export":      "/api/v1/operations/" + operationID.String() + "/export",
+		"download":    "/api/v1/download/" + operationID.String(),
+		"save_blocks": "/api/v1/operations/" + operationID.String() + "/blocks/save",
+		"blocks_list": "/api/v1/operations/" + operationID.String() + "/blocks",
 	}
 
 	// Расширенный ответ
@@ -304,6 +313,212 @@ func (h *Handlers) GetFormats(w http.ResponseWriter, r *http.Request) {
 		Formats []string `json:"formats"`
 	}{
 		Formats: formats,
+	}
+
+	RespondWithJSON(w, http.StatusOK, response)
+}
+
+// DownloadBlock загружает конкретный блок
+func (h *Handlers) DownloadBlock(w http.ResponseWriter, r *http.Request) {
+	// Получаем параметры из URL
+	vars := mux.Vars(r)
+	operationIDStr := vars["operation_id"]
+	blockIDStr := vars["block_id"]
+
+	// Парсим UUID
+	operationID, err := uuid.Parse(operationIDStr)
+	if err != nil {
+		RespondWithError(w, http.StatusBadRequest, "Неверный ID операции")
+		return
+	}
+
+	blockID, err := uuid.Parse(blockIDStr)
+	if err != nil {
+		RespondWithError(w, http.StatusBadRequest, "Неверный ID блока")
+		return
+	}
+
+	// Получаем формат из query параметров
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = "html"
+	}
+
+	// Проверяем формат
+	if format != "html" && format != "json" {
+		RespondWithError(w, http.StatusBadRequest, "Неподдерживаемый формат. Используйте: html, json")
+		return
+	}
+
+	// Создаем экземпляр downloader
+	downloader := downloader.NewDownloader(h.config)
+
+	// Загружаем блок
+	data, filename, err := downloader.DownloadBlock(operationID, blockID, format)
+	if err != nil {
+		RespondWithError(w, http.StatusNotFound, "Блок не найден: "+err.Error())
+		return
+	}
+
+	// Определяем Content-Type
+	var contentType string
+	if format == "html" {
+		contentType = "text/html"
+	} else {
+		contentType = "application/json"
+	}
+
+	// Отправляем файл
+	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
+}
+
+// GetBlockFiles возвращает список файлов блоков для операции
+func (h *Handlers) GetBlockFiles(w http.ResponseWriter, r *http.Request) {
+	// Получаем ID операции из URL
+	vars := mux.Vars(r)
+	operationIDStr := vars["operation_id"]
+
+	// Парсим UUID
+	operationID, err := uuid.Parse(operationIDStr)
+	if err != nil {
+		RespondWithError(w, http.StatusBadRequest, "Неверный ID операции")
+		return
+	}
+
+	// Создаем экземпляр downloader
+	downloader := downloader.NewDownloader(h.config)
+
+	// Получаем список файлов
+	files, err := downloader.GetBlockFiles(operationID)
+	if err != nil {
+		RespondWithError(w, http.StatusNotFound, "Файлы блоков не найдены: "+err.Error())
+		return
+	}
+
+	// Формируем ответ
+	response := struct {
+		OperationID string              `json:"operation_id"`
+		Files       map[string][]string `json:"files"`
+		Total       int                 `json:"total"`
+	}{
+		OperationID: operationID.String(),
+		Files:       files,
+		Total:       len(files["html"]) + len(files["metadata"]),
+	}
+
+	RespondWithJSON(w, http.StatusOK, response)
+}
+
+// DownloadAllBlocks создает и отправляет архив со всеми блоками операции
+func (h *Handlers) DownloadAllBlocks(w http.ResponseWriter, r *http.Request) {
+	// Получаем ID операции из URL
+	vars := mux.Vars(r)
+	operationIDStr := vars["operation_id"]
+
+	// Парсим UUID
+	operationID, err := uuid.Parse(operationIDStr)
+	if err != nil {
+		RespondWithError(w, http.StatusBadRequest, "Неверный ID операции")
+		return
+	}
+
+	// Создаем экземпляр downloader
+	downloader := downloader.NewDownloader(h.config)
+
+	// Создаем архив
+	archivePath, err := downloader.ZipBlocks(operationID)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Ошибка создания архива: "+err.Error())
+		return
+	}
+
+	// Открываем архив
+	file, err := os.Open(archivePath)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Ошибка открытия архива: "+err.Error())
+		return
+	}
+	defer file.Close()
+
+	// Получаем информацию о файле
+	fileInfo, err := file.Stat()
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Ошибка получения информации о файле: "+err.Error())
+		return
+	}
+
+	// Определяем имя файла
+	filename := filepath.Base(archivePath)
+
+	// Устанавливаем заголовки
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
+	w.Header().Set("Content-Length", strconv.FormatInt(fileInfo.Size(), 10))
+
+	// Отправляем файл
+	w.WriteHeader(http.StatusOK)
+	io.Copy(w, file)
+
+	// Удаляем архив после отправки
+	defer func() {
+		if err := os.Remove(archivePath); err != nil {
+			// Логируем ошибку, но не останавливаем выполнение
+			log.Printf("Ошибка удаления архива %s: %v", archivePath, err)
+		}
+	}()
+}
+
+// SaveBlocksEndpoint сохраняет блоки операции в файлы
+func (h *Handlers) SaveBlocksEndpoint(w http.ResponseWriter, r *http.Request) {
+	// Получаем ID операции из URL
+	vars := mux.Vars(r)
+	operationIDStr := vars["operation_id"]
+
+	// Парсим UUID
+	operationID, err := uuid.Parse(operationIDStr)
+	if err != nil {
+		RespondWithError(w, http.StatusBadRequest, "Неверный ID операции")
+		return
+	}
+
+	// Получаем блоки операции
+	blocks, err := h.parserService.GetBlocksByOperationID(r.Context(), operationID)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Ошибка получения блоков: "+err.Error())
+		return
+	}
+
+	// Создаем экземпляр downloader
+	downloader := downloader.NewDownloader(h.config)
+
+	// Сохраняем блоки
+	if err := downloader.SaveBlocks(blocks); err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Ошибка сохранения блоков: "+err.Error())
+		return
+	}
+
+	// Формируем ответ
+	response := struct {
+		OperationID string            `json:"operation_id"`
+		BlocksCount int               `json:"blocks_count"`
+		Message     string            `json:"message"`
+		Directory   string            `json:"directory"`
+		Links       map[string]string `json:"links"`
+	}{
+		OperationID: operationID.String(),
+		BlocksCount: len(blocks),
+		Message:     "Блоки успешно сохранены",
+		Directory:   filepath.Join(h.config.Downloader.OutputDir, "blocks", operationID.String()),
+		Links: map[string]string{
+			"list_files":     "/api/v1/operations/" + operationID.String() + "/blocks",
+			"download_all":   "/api/v1/operations/" + operationID.String() + "/blocks/download",
+			"operation_info": "/api/v1/operations/" + operationID.String(),
+		},
 	}
 
 	RespondWithJSON(w, http.StatusOK, response)

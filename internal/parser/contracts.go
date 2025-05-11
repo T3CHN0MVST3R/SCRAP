@@ -21,4 +21,13 @@ type ParserService interface {
 
 	// DetectPlatform определяет платформу сайта по HTML
 	DetectPlatform(html string) models.Platform
+
+	// GetBlocksByOperationID получает все блоки операции
+	GetBlocksByOperationID(ctx context.Context, operationID uuid.UUID) ([]models.Block, error)
+
+	// GetBlockByID получает конкретный блок по ID
+	GetBlockByID(ctx context.Context, blockID uuid.UUID) (*models.Block, error)
+
+	// SaveBlocks сохраняет блоки на диск
+	SaveBlocks(ctx context.Context, blocks []models.Block) error
 }

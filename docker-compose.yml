@@ -1,9 +1,11 @@
+version: '3.8'
+
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: scraper-app
+    container_name: scrapp
     restart: unless-stopped
     environment:
       - SERVER_PORT=8080
@@ -13,16 +15,32 @@ services:
       - DB_PASSWORD=postgres
       - DB_NAME=scraper
       - DB_SSLMODE=disable
+      - SCRAPER_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36
+      - SCRAPER_TIMEOUT=30s
+      - SCRAPER_MAX_DEPTH=2
+      - SCRAPER_CONCURRENCY=5
+      - SCRAPER_CRAWL_DELAY=1s
     ports:
       - "8080:8080"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     networks:
       - scraper-network
+    # Add proper logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Add proper init to handle zombie processes
+    init: true
+    # Add volume for shared memory to prevent Chrome crashes
+    shm_size: 2gb
 
   postgres:
-    image: postgres
-    container_name: scraper-postgres
+    image: postgres:14
+    container_name: scr-postgres
     restart: unless-stopped
     environment:
       - POSTGRES_USER=postgres
@@ -34,6 +52,13 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - scraper-network
+    # Healthcheck to ensure postgres is ready
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d scraper"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
 
 volumes:
   postgres_data:

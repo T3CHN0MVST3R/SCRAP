@@ -299,3 +299,83 @@ func (r *PostgresRepo) GetLinksByOperationID(ctx context.Context, operationID uu
 
 	return links, nil
 }
+func (r *PostgresRepo) GetAllOperations(ctx context.Context) ([]models.Operation, error) {
+	query := `
+		SELECT id, url, status, created_at, updated_at
+		FROM operations
+		ORDER BY created_at DESC
+	`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get all operations: %w", err)
+	}
+	defer rows.Close()
+
+	var operations []models.Operation
+
+	for rows.Next() {
+		var operation models.Operation
+		var status string
+
+		err := rows.Scan(
+			&operation.ID,
+			&operation.URL,
+			&status,
+			&operation.CreatedAt,
+			&operation.UpdatedAt,
+		)
+
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan operation: %w", err)
+		}
+
+		operation.Status = models.OperationStatus(status)
+		operations = append(operations, operation)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating operations: %w", err)
+	}
+
+	return operations, nil
+}
+
+// GetBlockByID получает блок по ID
+func (r *PostgresRepo) GetBlockByID(ctx context.Context, blockID uuid.UUID) (*models.Block, error) {
+	query := `
+		SELECT id, operation_id, block_type, platform, content, html, created_at
+		FROM blocks
+		WHERE id = $1
+	`
+
+	var block models.Block
+	var blockType, platform string
+	var contentJSON []byte
+
+	err := r.db.QueryRowContext(ctx, query, blockID).Scan(
+		&block.ID,
+		&block.OperationID,
+		&blockType,
+		&platform,
+		&contentJSON,
+		&block.HTML,
+		&block.CreatedAt,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("block not found: %s", blockID)
+		}
+		return nil, fmt.Errorf("failed to get block: %w", err)
+	}
+
+	block.BlockType = models.BlockType(blockType)
+	block.Platform = models.Platform(platform)
+
+	if err := json.Unmarshal(contentJSON, &block.Content); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal block content: %w", err)
+	}
+
+	return &block, nil
+}

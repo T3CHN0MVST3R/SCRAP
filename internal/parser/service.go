@@ -3,6 +3,7 @@ package parser
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,6 +70,7 @@ func (s *parserService) ParseURL(ctx context.Context, url string) (uuid.UUID, er
 		// Загружаем страницу
 		html, err := s.downloader.DownloadPage(goCtx, url)
 		if err != nil {
+			log.Printf("Error downloading %s: %v", url, err)
 			s.repo.UpdateOperationStatus(goCtx, operationID, models.StatusError)
 			return
 		}
@@ -83,42 +85,46 @@ func (s *parserService) ParseURL(ctx context.Context, url string) (uuid.UUID, er
 		case models.PlatformWordPress:
 			headerBlock, err = s.wordpressParser.ParseHeader(html)
 			if err != nil {
-				return
+				log.Printf("Error parsing WordPress header: %v", err)
 			}
 
 			footerBlock, err = s.wordpressParser.ParseFooter(html)
 			if err != nil {
-				return
+				log.Printf("Error parsing WordPress footer: %v", err)
 			}
 		case models.PlatformTilda:
 			headerBlock, err = s.tildaParser.ParseHeader(html)
 			if err != nil {
-				return
+				log.Printf("Error parsing Tilda header: %v", err)
 			}
 
 			footerBlock, err = s.tildaParser.ParseFooter(html)
 			if err != nil {
-				return
+				log.Printf("Error parsing Tilda footer: %v", err)
 			}
 		case models.PlatformBitrix:
 			headerBlock, err = s.bitrixParser.ParseHeader(html)
 			if err != nil {
-				return
+				log.Printf("Error parsing Bitrix header: %v", err)
 			}
 
 			footerBlock, err = s.bitrixParser.ParseFooter(html)
 			if err != nil {
-				return
+				log.Printf("Error parsing Bitrix footer: %v", err)
 			}
 		case models.PlatformHTML5:
 			var blocks []*models.Block
 			templates, err := s.templateService.GetTemplates(platform)
 			if err != nil {
+				log.Printf("Error getting templates: %v", err)
+				s.repo.UpdateOperationStatus(goCtx, operationID, models.StatusError)
 				return
 			}
 
 			blocks, err = s.html5Parser.ParseAndClassifyPage(html, templates)
 			if err != nil {
+				log.Printf("Error parsing HTML5 page: %v", err)
+				s.repo.UpdateOperationStatus(goCtx, operationID, models.StatusError)
 				return
 			}
 
@@ -129,7 +135,12 @@ func (s *parserService) ParseURL(ctx context.Context, url string) (uuid.UUID, er
 
 					err = s.repo.SaveBlock(goCtx, block)
 					if err != nil {
-						return
+						log.Printf("Error saving block: %v", err)
+					}
+
+					// Сохраняем блок на диск
+					if err := s.downloader.SaveBlock(block); err != nil {
+						log.Printf("Error saving block to disk: %v", err)
 					}
 				}
 			}
@@ -140,7 +151,12 @@ func (s *parserService) ParseURL(ctx context.Context, url string) (uuid.UUID, er
 			headerBlock.OperationID = operationID
 			err = s.repo.SaveBlock(goCtx, headerBlock)
 			if err != nil {
-				return
+				log.Printf("Error saving header block: %v", err)
+			} else {
+				// Сохраняем блок на диск
+				if err := s.downloader.SaveBlock(headerBlock); err != nil {
+					log.Printf("Error saving header block to disk: %v", err)
+				}
 			}
 		}
 
@@ -148,14 +164,19 @@ func (s *parserService) ParseURL(ctx context.Context, url string) (uuid.UUID, er
 			footerBlock.OperationID = operationID
 			err = s.repo.SaveBlock(goCtx, footerBlock)
 			if err != nil {
-				return
+				log.Printf("Error saving footer block: %v", err)
+			} else {
+				// Сохраняем блок на диск
+				if err := s.downloader.SaveBlock(footerBlock); err != nil {
+					log.Printf("Error saving footer block to disk: %v", err)
+				}
 			}
 		}
 
 		// Обновляем статус операции
 		err = s.repo.UpdateOperationStatus(goCtx, operationID, models.StatusCompleted)
 		if err != nil {
-			return
+			log.Printf("Error updating operation status: %v", err)
 		}
 	}()
 
@@ -311,4 +332,40 @@ func (s *parserService) DetectPlatform(html string) models.Platform {
 	}
 
 	return models.PlatformUnknown
+}
+
+// GetBlocksByOperationID получает все блоки операции
+func (s *parserService) GetBlocksByOperationID(ctx context.Context, operationID uuid.UUID) ([]models.Block, error) {
+	return s.repo.GetBlocksByOperationID(ctx, operationID)
+}
+
+// GetBlockByID получает конкретный блок по ID
+func (s *parserService) GetBlockByID(ctx context.Context, blockID uuid.UUID) (*models.Block, error) {
+	// Этот метод нужно реализовать в репозитории
+	// Временная реализация - ищем среди всех операций
+
+	operations, err := s.repo.GetAllOperations(ctx) // Если этого метода нет, нужно его добавить
+	if err != nil {
+		return nil, err
+	}
+
+	for _, op := range operations {
+		blocks, err := s.repo.GetBlocksByOperationID(ctx, op.ID)
+		if err != nil {
+			continue
+		}
+
+		for _, block := range blocks {
+			if block.ID == blockID {
+				return &block, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("block not found: %s", blockID)
+}
+
+// SaveBlocks сохраняет блоки на диск
+func (s *parserService) SaveBlocks(ctx context.Context, blocks []models.Block) error {
+	return s.downloader.SaveBlocks(blocks)
 }

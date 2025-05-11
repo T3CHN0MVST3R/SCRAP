@@ -30,6 +30,12 @@ func SetupRouter(handlers *handlers.Handlers) *mux.Router {
 	// Регистрируем маршруты краулера
 	apiRouter.HandleFunc("/crawl", handlers.CrawlURL).Methods(http.MethodPost)
 
+	// ДОБАВЛЯЕМ ОТСУТСТВУЮЩИЕ МАРШРУТЫ ДЛЯ РАБОТЫ С БЛОКАМИ
+	apiRouter.HandleFunc("/operations/{operation_id}/blocks/save", handlers.SaveBlocksEndpoint).Methods(http.MethodPost)
+	apiRouter.HandleFunc("/operations/{operation_id}/blocks", handlers.GetBlockFiles).Methods(http.MethodGet)
+	apiRouter.HandleFunc("/operations/{operation_id}/blocks/{block_id}/download", handlers.DownloadBlock).Methods(http.MethodGet)
+	apiRouter.HandleFunc("/operations/{operation_id}/blocks/download", handlers.DownloadAllBlocks).Methods(http.MethodGet)
+
 	// Swagger UI
 	router.PathPrefix("/swagger/").Handler(httpSwagger.WrapHandler)
 
@@ -95,6 +101,30 @@ func SetupRouter(handlers *handlers.Handlers) *mux.Router {
 					<span class="method post">POST</span>
 					<span class="endpoint-url">/api/v1/crawl</span>
 					<p>Обходит указанный URL и собирает ссылки.</p>
+				</div>
+				
+				<div class="endpoint">
+					<span class="method post">POST</span>
+					<span class="endpoint-url">/api/v1/operations/{operation_id}/blocks/save</span>
+					<p>Сохраняет все блоки операции в файлы.</p>
+				</div>
+				
+				<div class="endpoint">
+					<span class="method get">GET</span>
+					<span class="endpoint-url">/api/v1/operations/{operation_id}/blocks</span>
+					<p>Возвращает список файлов блоков для операции.</p>
+				</div>
+				
+				<div class="endpoint">
+					<span class="method get">GET</span>
+					<span class="endpoint-url">/api/v1/operations/{operation_id}/blocks/{block_id}/download</span>
+					<p>Загружает конкретный блок в выбранном формате.</p>
+				</div>
+				
+				<div class="endpoint">
+					<span class="method get">GET</span>
+					<span class="endpoint-url">/api/v1/operations/{operation_id}/blocks/download</span>
+					<p>Создает и загружает архив со всеми блоками операции.</p>
 				</div>
 				
 				<p>Документация API доступна по ссылке: <a href="/swagger/">/swagger/</a></p>

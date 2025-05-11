@@ -19,11 +19,17 @@ type ParserRepo interface {
 	// GetOperationByID получает операцию по ID
 	GetOperationByID(ctx context.Context, operationID uuid.UUID) (*models.Operation, error)
 
+	// GetAllOperations получает все операции
+	GetAllOperations(ctx context.Context) ([]models.Operation, error)
+
 	// SaveBlock сохраняет блок, найденный при парсинге
 	SaveBlock(ctx context.Context, block *models.Block) error
 
 	// GetBlocksByOperationID получает все блоки по ID операции
 	GetBlocksByOperationID(ctx context.Context, operationID uuid.UUID) ([]models.Block, error)
+
+	// GetBlockByID получает блок по ID
+	GetBlockByID(ctx context.Context, blockID uuid.UUID) (*models.Block, error)
 
 	// GetAllTemplates получает все HTML теги для парсера блоков страницы
 	GetAllTemplates(platform models.Platform) ([]models.BlockTemplate, error)
